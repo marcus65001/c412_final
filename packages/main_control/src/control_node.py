@@ -102,7 +102,11 @@ class LF_Controller(Controller):
         super().__init__()
         self.PD_omega = PD(-0.045, 0.0035)
         self.PD_all = PD(1.0,0.002)
-        self.constant_v = ConstantControl(0.3)
+        self.PD_all.set_disable(1.0)
+        self.constant_v = ConstantControl(velocity)
+
+    def __repr__(self):
+        return "<PD_omega={} PD_all={}>".format(self.PD_omega,self.PD_all)
 
     def get_omega(self):
         return max(min(self.PD_omega.get(),self.cap_omega)*self.PD_all.get(),-self.cap_omega)
@@ -133,6 +137,10 @@ class ControlNode(DTROS):
         self.state = State.LF
         self.controller = LF_Controller(0.3)
         self.stopping_timer = None
+        self.pause_stop_detection=False
+        self.masking_timer = None
+        self.pause_timer=None
+        self.tag_det_id=0
 
         # Publishers & Subscribers
         self.pub = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed",
@@ -145,7 +153,7 @@ class ControlNode(DTROS):
                                     buff_size="20MB")
         self.tagid_sub = rospy.Subscriber("~tagid",
                                     Int32,
-                                    self.cb_tagid_detect,
+                                    self.cb_tagid,
                                     queue_size=1)
         self.vel_pub = rospy.Publisher("/" + self.veh + "/car_cmd_switch_node/cmd",
                                        Twist2DStamped,
@@ -205,31 +213,40 @@ class ControlNode(DTROS):
             self.controller.PD_omega.proportional = None
 
         # stop line
-        mask_stop_l=cv2.inRange(hsv, STOP_MASK_L)
-        mask_stop_h=cv2.inRange(hsv, STOP_MASK_H)
-        mask_stop=mask_stop_h+mask_stop_l
-        cont_stop, hierarchy_stop = cv2.findContours(mask_stop,
-                                               cv2.RETR_EXTERNAL,
-                                               cv2.CHAIN_APPROX_NONE)
-        if len(cont_stop)>0:
-            max_contour = max(cont_stop, key=cv2.contourArea)
-            if (cv2.contourArea(max_contour))>2000:
-                M = cv2.moments(max_contour)
-                try:
-                    cx = int(M['m10'] / M['m00'])
-                    cy = int(M['m01'] / M['m00'])
+        if not self.pause_stop_detection:
+            mask_stop_l=cv2.inRange(hsv, *STOP_MASK_L)
+            mask_stop_h=cv2.inRange(hsv, *STOP_MASK_H)
+            mask_stop=mask_stop_h+mask_stop_l
+            cont_stop, hierarchy_stop = cv2.findContours(mask_stop,
+                                                   cv2.RETR_EXTERNAL,
+                                                   cv2.CHAIN_APPROX_NONE)
+            if len(cont_stop)>0:
+                max_contour = max(cont_stop, key=cv2.contourArea)
+                if (cv2.contourArea(max_contour))>2000:
+                    M = cv2.moments(max_contour)
+                    try:
+                        cx = int(M['m10'] / M['m00'])
+                        cy = int(M['m01'] / M['m00'])
 
-                    self.controller.PD_all.set_disable(None)
-                    self.controller.PD_all.proportional = 1.0-cy/(crop_height+20)  # lf_offset
-                    if self.stopping_timer is None:
+                        self.controller.PD_all.set_disable(None)
+                        self.controller.PD_all.proportional = 1.0-cy/(crop_height+20)  # lf_offset
+                        if self.stopping_timer is None:
+                            if DEBUG:
+                                self.loginfo("Stopping")
+                            self.stopping_timer=rospy.Timer(rospy.Duration(4.0),self.cb_stopping_timeup,oneshot=True)
+                            if self.tag_det_id in {56,50}:
+                                self.loginfo("Go straight/left, mask right")
+                                self.state=State.MASK_RIGHT
+                                self.masking_timer = rospy.Timer(rospy.Duration(6.0), self.cb_masking_timeup, oneshot=True)
                         if DEBUG:
-                            self.loginfo("Stopping")
-                        self.stopping_timer=rospy.Timer(rospy.Duration(4.0),self.cb_stopping_timeup,oneshot=True)
-                    if DEBUG:
-                        cv2.drawContours(crop, contours, max_idx, (255, 0, 0), 3)
-                        cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
-                except:
-                    pass
+                            cv2.drawContours(crop, contours, max_idx, (255, 0, 0), 3)
+                            cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+                    except:
+                        pass
+
+    def cb_tagid(self,msg):
+        if msg.data:
+            self.tag_det_id=msg.data
 
     def callback(self, msg):
         img = self.jpeg.decode(msg.data)
@@ -237,13 +254,29 @@ class ControlNode(DTROS):
 
     def cb_stopping_timeup(self,te):
         if DEBUG:
-            self.loginfo("Stopping time up.")
+            self.loginfo("Stopping time up. Pause stop detection.")
+        self.pause_stop_detection = True
+        self.pause_timer = rospy.Timer(rospy.Duration(3.0), self.cb_pause_timeup, oneshot=True)
         self.stopping_timer=None
         self.controller.PD_all.set_disable(1.0)
         return
 
+    def cb_pause_timeup(self,te):
+        if DEBUG:
+            self.loginfo("Pause time up.")
+        self.pause_timer=None
+        self.pause_stop_detection=False
+        return
+
+    def cb_masking_timeup(self,te):
+        if DEBUG:
+            self.loginfo("Masking time up.")
+        self.masking_timer=None
+        self.state=State.LF
+        return
+
     def drive(self):
-        self.loginfo(self.controller.PD_omega)
+        self.loginfo(self.controller)
         self.vel_pub.publish(self.controller.get_twist())
 
     def hook(self):
