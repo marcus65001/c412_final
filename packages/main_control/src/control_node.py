@@ -19,6 +19,8 @@ from collections import namedtuple
 
 
 ROAD_MASK = [(20, 60, 0), (50, 255, 255)]
+STOP_MASK_L = [(0, 70, 50), (10, 255, 255)]
+STOP_MASK_H = [(170, 70, 50), (180, 255, 255)]
 DEBUG = True
 
 
@@ -29,6 +31,13 @@ class State(Enum):
     PARK = auto()
     MASK_RIGHT = auto()
 
+
+class ConstantControl:
+    def __init__(self, value):
+        self.value=value
+
+    def get(self):
+        return self.value
 
 # PD class
 class PD:
@@ -92,13 +101,14 @@ class LF_Controller(Controller):
     def __init__(self,velocity):
         super().__init__()
         self.PD_omega = PD(-0.045, 0.0035)
-        self.velocity=velocity
+        self.PD_all = PD(1.0,0.002)
+        self.constant_v = ConstantControl(0.3)
 
     def get_omega(self):
-        return max(min(self.PD_omega.get(),self.cap_omega),-self.cap_omega)
+        return max(min(self.PD_omega.get(),self.cap_omega)*self.PD_all.get(),-self.cap_omega)
 
     def get_velocity(self):
-        return max(0,min(self.velocity,self.cap_v))
+        return max(0,min(self.constant_v.get()*self.PD_all.get(),self.cap_v))
 
 
 class ControlNode(DTROS):
@@ -122,6 +132,7 @@ class ControlNode(DTROS):
         # Properties
         self.state = State.LF
         self.controller = LF_Controller(0.3)
+        self.stopping_timer = None
 
         # Publishers & Subscribers
         self.pub = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed",
@@ -155,8 +166,11 @@ class ControlNode(DTROS):
         if DEBUG:
             rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
             self.pub.publish(rect_img_msg)
-        crop_width = crop.shape[1]
+        crop_height, crop_width, _ = crop.shape
+
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+
+        # lane follow
         mask = cv2.inRange(hsv, ROAD_MASK[0], ROAD_MASK[1])
         crop = cv2.bitwise_and(crop, crop, mask=mask)
         contours, hierarchy = cv2.findContours(mask,
@@ -186,9 +200,43 @@ class ControlNode(DTROS):
         else:
             self.controller.PD_omega.proportional = None
 
+        # stop line
+        mask_stop_l=cv2.inRange(hsv, STOP_MASK_L)
+        mask_stop_h=cv2.inRange(hsv, STOP_MASK_H)
+        mask_stop=mask_stop_h+mask_stop_l
+        cont_stop, hierarchy_stop = cv2.findContours(mask_stop,
+                                               cv2.RETR_EXTERNAL,
+                                               cv2.CHAIN_APPROX_NONE)
+        if len(cont_stop)>0:
+            max_contour = max(cont_stop, key=cv2.contourArea)
+            if (cv2.contourArea(max_contour))>2000:
+                M = cv2.moments(max_contour)
+                try:
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+
+                    self.controller.PD_all.set_disable(None)
+                    self.controller.PD_all.proportional = 1.0-cy/(crop_height+20)  # lf_offset
+                    if self.stopping_timer is None:
+                        if DEBUG:
+                            self.loginfo("Stopping")
+                        self.stopping_timer=rospy.Timer(rospy.Duration(4.0),self.cb_stopping_timeup,oneshot=True)
+                    if DEBUG:
+                        cv2.drawContours(crop, contours, max_idx, (255, 0, 0), 3)
+                        cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+                except:
+                    pass
+
     def callback(self, msg):
         img = self.jpeg.decode(msg.data)
         self.cb_img_lf(img)
+
+    def cb_stopping_timeup(self,te):
+        if DEBUG:
+            self.loginfo("Stopping time up.")
+        self.stopping_timer=None
+        self.controller.PD_all.set_disable(1.0)
+        return
 
     def drive(self):
         self.loginfo(self.controller.PD_omega)
