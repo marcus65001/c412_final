@@ -143,6 +143,10 @@ class ControlNode(DTROS):
                                     self.callback,
                                     queue_size=1,
                                     buff_size="20MB")
+        self.tagid_sub = rospy.Subscriber("~tagid",
+                                    Int32,
+                                    self.cb_tagid_detect,
+                                    queue_size=1)
         self.vel_pub = rospy.Publisher("/" + self.veh + "/car_cmd_switch_node/cmd",
                                        Twist2DStamped,
                                        queue_size=1)
