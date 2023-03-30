@@ -47,6 +47,8 @@ class PD:
         # get the output of the PD
         if self.disabled_value is not None:
             return self.disabled_value
+        if self.proportional is None:
+            return 0
         # P Term
         P = self.proportional * self.P
 
@@ -73,8 +75,9 @@ class PD:
 
 class Controller:
     def __init__(self):
-        self.cap_omega=8.0
-        self.cap_v=0.8
+        self.cap_omega=6.5
+        self.cap_v=0.7
+
     def get_velocity(self):
         return 0
 
@@ -87,8 +90,10 @@ class Controller:
 
 class LF_Controller(Controller):
     def __init__(self,velocity):
-        self.PD_omega = PD(-0.049, 0.004)
+        super().__init__()
+        self.PD_omega = PD(-0.045, 0.0035)
         self.velocity=velocity
+
     def get_omega(self):
         return max(min(self.PD_omega.get(),self.cap_omega),-self.cap_omega)
 
@@ -116,6 +121,7 @@ class ControlNode(DTROS):
 
         # Properties
         self.state = State.LF
+        self.controller = LF_Controller(0.3)
 
         # Publishers & Subscribers
         self.pub = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed",
@@ -139,10 +145,16 @@ class ControlNode(DTROS):
         mid_y = int(y + (((y + h) - y)))
         return (mid_x, mid_y)
 
-    def callback(self, msg):
-        img = self.jpeg.decode(msg.data)
+    def cb_img_lf(self, img):
+        if not isinstance(self.controller,LF_Controller):
+            return
         # Part for Lane Following Detection
         crop = img[300:-1, :, :]
+        if self.state==State.MASK_RIGHT:
+            crop[:,-200:,:]=0
+        if DEBUG:
+            rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
+            self.pub.publish(rect_img_msg)
         crop_width = crop.shape[1]
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, ROAD_MASK[0], ROAD_MASK[1])
@@ -165,30 +177,29 @@ class ControlNode(DTROS):
             try:
                 cx = int(M['m10'] / M['m00'])
                 cy = int(M['m01'] / M['m00'])
-                self.pd_omega.proportional = cx - int(crop_width / 2) + self.lf_offset
+                self.controller.PD_omega.proportional = cx - int(crop_width / 2) + 220  # lf_offset
                 if DEBUG:
                     cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
                     cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
             except:
                 pass
         else:
-            self.pd_omega.proportional = None
+            self.controller.PD_omega.proportional = None
 
-        if DEBUG:
-            rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
-            self.pub.publish(rect_img_msg)
+    def callback(self, msg):
+        img = self.jpeg.decode(msg.data)
+        self.cb_img_lf(img)
 
     def drive(self):
-        self.twist=self.controller.get_twist()
-        self.vel_pub.publish(self.twist)
+        self.loginfo(self.controller.PD_omega)
+        self.vel_pub.publish(self.controller.get_twist())
 
     def hook(self):
-        print("SHUTTING DOWN")
-        self.twist.v = 0
-        self.twist.omega = 0
-        self.vel_pub.publish(self.twist)
+        self.loginfo("SHUTTING DOWN")
+        twist=Twist2DStamped(v=0, omega=0)
+        self.vel_pub.publish(twist)
         for i in range(8):
-            self.vel_pub.publish(self.twist)
+            self.vel_pub.publish(twist)
 
 
 if __name__ == "__main__":

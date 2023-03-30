@@ -13,7 +13,7 @@ dt-launchfile-init
 # NOTE: Use `dt-exec COMMAND` to run the main process (blocking process)
 
 # launching app
-dt-exec roslaunch control control_node.launch veh:=csc22925
+dt-exec roslaunch main_control control_node.launch veh:=csc22909
 
 
 # ----------------------------------------------------------------------------
