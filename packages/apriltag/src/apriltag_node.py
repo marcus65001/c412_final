@@ -36,8 +36,6 @@ class TagDetectorNode(DTROS):
                                      decode_sharpening=0.25,
                                      debug=0)
         self._at_detector_cam_para = None
-        self.num_roi_l = np.array([80, 63, 86])
-        self.num_roi_h = np.array([130, 255, 255])
 
         self.ci_cam_matrix = None
         self.ci_cam_dist = None
@@ -69,10 +67,8 @@ class TagDetectorNode(DTROS):
             "t": "BLUE",
             "other": "LIGHT_OFF"
         }
-        self.led_color = "white"
         self.tag_det = None
         self.tag_det_dist = 1.4
-        self.number_roi = None
 
         # subscriber
         self.sub_comp_img = rospy.Subscriber('~cam', CompressedImage, self.cb_img)  # camera image topic
@@ -93,11 +89,6 @@ class TagDetectorNode(DTROS):
             Int32,
             queue_size=1
         )
-
-        # services
-        # self.srvp_led_emitter = rospy.ServiceProxy(
-        #     "~set_pattern", ChangePattern
-        # )
 
     def read_image(self, msg):
         try:
@@ -160,18 +151,6 @@ class TagDetectorNode(DTROS):
         cv2.line(image, pt_A, pt_B, (b * 255, g * 255, r * 255), 5)
         return image
 
-    # def set_led(self, color):
-    #     if color==self.led_color:
-    #         return
-    #     self.log("Change LED: {}".format(color))
-    #     msg = String()
-    #     msg.data = color
-    #     try:
-    #         self.srvp_led_emitter(msg)
-    #         self.led_color=color
-    #     except Exception as e:
-    #         self.log("Set LED error: {}".format(e))
-
     def tag_detect(self, img):
         tags = self._at_detector.detect(img, True, self._at_detector_cam_para, 0.051)
         # print(tags)
@@ -207,8 +186,6 @@ class TagDetectorNode(DTROS):
                 rcand = None
         self.tag_det = rcand
 
-        # led
-        # self.set_led(self.tag_id_to_color(rcand.tag_id) if rcand else "WHITE")
         return img
 
     def cb_tag_pose_update(self, timer):
@@ -267,33 +244,6 @@ class TagDetectorNode(DTROS):
             # uimg=cv2.UMat(self.read_image(msg))
             self.image = self.read_image(msg)
 
-    def number_roi_detect(self, img):
-        # uimg = cv2.UMat(img)
-        img_h = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        H, W = img_h.shape[:2]
-        mask = cv2.inRange(img_h, self.num_roi_l, self.num_roi_h)
-
-        contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        if len(contours) != 0:
-            self.log("number roi")
-            try:
-                max_contour = max(contours, key=cv2.contourArea)
-                if cv2.contourArea(max_contour) > 500 * 500:
-                    self.log("too large")
-                    return None
-                x, y, w, h = cv2.boundingRect(max_contour)
-                # cv2.rectangle(img_h, (x + 10, y + 10), (x + w - 10, y + h - 10), (0, 255, 0), 2)
-                # crop = cv2.UMat(img_h, [y + 10, y + h - 10], [x + 10, x + w - 10])
-                crop = img_h[max(0, y - 2):min(H, y + h + 2), max(0, x - 2): min(W, x + w + 2)]
-                crop = cv2.cvtColor(crop, cv2.COLOR_HSV2BGR)
-                if (w * h < 30 * 30) or (not (0.5 < w / h < 2.0)):
-                    self.log("too small/ratio {} {}".format(w, h))
-                    return crop
-            except Exception as e:
-                self.log(e)
-        return crop
-
     def run(self):
         rate = rospy.Rate(2)
         while not rospy.is_shutdown():
@@ -306,21 +256,11 @@ class TagDetectorNode(DTROS):
                 td_image = self.tag_detect(g_image)
                 # tag id message
                 tagid_msg = Int32()
-                # crop roi
                 if self.tag_det is not None:
                     tagid_msg.data = self.tag_det.tag_id
-                    self.number_roi = self.number_roi_detect(ud_image)
                 else:
                     tagid_msg.data = -1
                 self.pub_at_id.publish(tagid_msg)
-
-                # publish
-                if self.number_roi is not None:
-                    self.log("image pub")
-                    mat = self.number_roi
-                    image_msg = self._bridge.cv2_to_compressed_imgmsg(mat, dst_format="jpeg")
-                    self.pub.publish(image_msg)
-                    self.number_roi = None
                 rate.sleep()
 
 

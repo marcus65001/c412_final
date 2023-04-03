@@ -30,7 +30,8 @@ class State(Enum):
     LF = auto()
     LF_ENGLISH = auto()
     PARK = auto()
-    MASK_RIGHT = auto()
+    STRAIGHT=auto()
+    LEFT= auto()
 
 
 class ConstantControl:
@@ -88,18 +89,18 @@ class Controller:
         self.cap_omega=6.5
         self.cap_v=0.7
 
-    def get_velocity(self):
+    def get_velocity(self,node):
         return 0
 
-    def get_omega(self):
+    def get_omega(self,node):
         return 0
 
-    def get_twist(self):
-        return Twist2DStamped(v=self.get_velocity(), omega=self.get_omega())
+    def get_twist(self,node):
+        return Twist2DStamped(v=self.get_velocity(node), omega=self.get_omega(node))
 
 
 class LF_Controller(Controller):
-    def __init__(self,velocity=0.3,left_turn_omega=-3):
+    def __init__(self,velocity=0.3,left_turn_omega=4):
         super().__init__()
         self.PD_omega = PD(-0.045, 0.0035)
         self.PD_all = PD(1.0,0.002)
@@ -110,13 +111,16 @@ class LF_Controller(Controller):
     def __repr__(self):
         return "<PD_omega={} PD_all={}>".format(self.PD_omega,self.PD_all)
 
-    def get_omega(self):
+    def get_omega(self,node):
         omega_cand=self.PD_omega.get()
         if omega_cand is None:
-            omega_cand=self.left_turn_omega
+            if node.state==State.LEFT:
+                omega_cand=self.left_turn_omega
+            else:
+                omega_cand=0
         return max(min(omega_cand,self.cap_omega)*self.PD_all.get(),-self.cap_omega)
 
-    def get_velocity(self):
+    def get_velocity(self,node):
         return max(0,min(self.constant_v.get()*self.PD_all.get(),self.cap_v))
 
 
@@ -138,6 +142,11 @@ class ControlNode(DTROS):
 
         self.loginfo("Initialized")
 
+        self.tag_to_state = {
+            56:State.STRAIGHT,
+            50:State.LEFT
+        }
+
         # Properties
         self.state = State.LF
         self.controller = LF_Controller(0.3)
@@ -145,6 +154,7 @@ class ControlNode(DTROS):
         self.tag_det_id = 0
         self.det_duck = False
         self.offset_sign = 1
+        self.lf_img=None
 
         # Timers
         self.stopping_timer = None
@@ -189,9 +199,10 @@ class ControlNode(DTROS):
         if not isinstance(self.controller,LF_Controller):
             return
         # Part for Lane Following Detection
-        crop = img[300:-1, :, :]
-        if self.state==State.MASK_RIGHT:
+        crop = img[330:-1, :, :]
+        if self.state in {State.LEFT,State.STRAIGHT}:
             crop[:,-200:,:]=0
+        self.lf_img=crop
         if DEBUG:
             rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
             self.pub.publish(rect_img_msg)
@@ -231,38 +242,44 @@ class ControlNode(DTROS):
 
         # stop line
         if not self.pause_stop_detection:
-            mask_stop_l=cv2.inRange(hsv, *STOP_MASK_L)
-            mask_stop_h=cv2.inRange(hsv, *STOP_MASK_H)
-            mask_stop_blue = cv2.inRange(hsv, *STOP_MASK_BLUE)
-            mask_stop=mask_stop_h+mask_stop_l+mask_stop_blue
+            if self.tag_det_id!=163:
+                mask_stop_l=cv2.inRange(hsv, *STOP_MASK_L)
+                mask_stop_h=cv2.inRange(hsv, *STOP_MASK_H)
+                mask_stop = mask_stop_h + mask_stop_l
+            else:
+                mask_stop = cv2.inRange(hsv, *STOP_MASK_BLUE)
+
             cont_stop, hierarchy_stop = cv2.findContours(mask_stop,
                                                    cv2.RETR_EXTERNAL,
                                                    cv2.CHAIN_APPROX_NONE)
             if len(cont_stop)>0:
                 max_contour = max(cont_stop, key=cv2.contourArea)
                 m_area=cv2.contourArea(max_contour)
-                if 6000>m_area>2000:
+                # self.loginfo("contour area: {}".format(m_area))
+                if m_area>3500:
                     M = cv2.moments(max_contour)
                     try:
                         cx = int(M['m10'] / M['m00'])
                         cy = int(M['m01'] / M['m00'])
                         # enable PD controller to stop
-                        self.controller.PD_all.set_disable(None)
                         self.controller.PD_all.proportional = 1.0-cy/(crop_height+20)  # lf_offset
                         if self.stopping_timer is None:
                             if DEBUG:
                                 self.loginfo("Stopping")
+                            self.controller.PD_all.set_disable(None)
                             self.stopping_timer=rospy.Timer(rospy.Duration(4.5),self.cb_stopping_timeup,oneshot=True)
-                            if self.tag_det_id in {56,50}:
+                            self.state = self.tag_to_state.get(self.tag_det_id, State.LF)
+                            self.loginfo(self.state)
+                            if self.state in {State.STRAIGHT,State.LEFT}:
                                 self.loginfo("Go straight/left, mask right")
-                                self.state=State.MASK_RIGHT
-                                self.masking_timer = rospy.Timer(rospy.Duration(6.0), self.cb_masking_timeup, oneshot=True)
+                                self.masking_timer = rospy.Timer(rospy.Duration(10.0), self.cb_masking_timeup, oneshot=True)
                         if DEBUG:
                             cv2.drawContours(crop, contours, max_idx, (255, 0, 0), 3)
                             cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
                     except:
                         pass
-                elif m_area>6000 and not self.avoid_timer:
+                # elif m_area>6000 and not self.avoid_timer:
+                elif False:
                     # vehicle detection
                     if DEBUG:
                         self.loginfo("Large stop contour, avoid/LF_ENGLISH.")
@@ -273,20 +290,6 @@ class ControlNode(DTROS):
             elif self.stopping_timer is not None:
                 # lost stop line detection
                 self.controller.PD_all.proportional = 0.0
-
-        # duck detection
-        if self.stopping_timer is not None:  # only in stopping state
-            template = cv2.imread('/home/marcus/duck1.png')
-            res = cv2.matchTemplate(crop, template, cv2.TM_CCORR_NORMED)
-            threshold = 0.9
-            loc = np.where(res >= threshold)
-            if len(loc[0])>100:
-                if DEBUG:
-                    self.loginfo("See duck")
-                self.det_duck=True
-            else:
-                self.det_duck=False
-
 
     def cb_tagid(self,msg):
         if msg.data:
@@ -313,9 +316,14 @@ class ControlNode(DTROS):
         if DEBUG:
             self.loginfo("Stopping time up. Pause stop detection.")
         self.pause_stop_detection = True
-        self.pause_timer = rospy.Timer(rospy.Duration(3.0), self.cb_pause_timeup, oneshot=True)
-        self.stopping_timer=None
+        if self.state!=State.STRAIGHT:
+            self.loginfo("Short pause.")
+            self.pause_timer = rospy.Timer(rospy.Duration(3.0), self.cb_pause_timeup, oneshot=True)
+        else:
+            self.loginfo("Long pause.")
+            self.pause_timer = rospy.Timer(rospy.Duration(9.0), self.cb_pause_timeup, oneshot=True)
         self.controller.PD_all.set_disable(1.0)
+        self.stopping_timer=None
         return
 
     def cb_pause_timeup(self,te):
@@ -341,9 +349,23 @@ class ControlNode(DTROS):
         self.avoid_timer = None
         return
 
+    def cb_duck_det(self,te):
+        #duck detection
+        template = cv2.imread('/data/duck.png')
+        res = cv2.matchTemplate(self.lf_img, template, cv2.TM_CCORR_NORMED)
+        threshold = 0.9
+        loc = np.where(res >= threshold)
+        if len(loc[0])>100:
+            if DEBUG:
+                self.loginfo("See duck")
+            self.det_duck=True
+        else:
+            self.det_duck=False
+
+
     def drive(self):
         self.loginfo(self.controller)
-        self.vel_pub.publish(self.controller.get_twist())
+        self.vel_pub.publish(self.controller.get_twist(self))
 
     def hook(self):
         self.loginfo("SHUTTING DOWN")
@@ -356,6 +378,8 @@ class ControlNode(DTROS):
 if __name__ == "__main__":
     node = ControlNode("control_node")
     rate = rospy.Rate(8)  # 8hz
+    rospy.sleep(rospy.Duration(5))
+    # t_duck_det=rospy.Timer(rospy.Duration(0.5),node.cb_duck_det)
     while not rospy.is_shutdown():
         node.drive()
         rate.sleep()
