@@ -152,6 +152,7 @@ class ControlNode(DTROS):
         self.controller = LF_Controller(0.3)
         self.pause_stop_detection = False
         self.tag_det_id = 0
+        self.tag_det=None
         self.det_duck = False
         self.offset_sign = 1
         self.lf_img=None
@@ -240,39 +241,38 @@ class ControlNode(DTROS):
         else:
             self.controller.PD_omega.proportional = None
 
-        # stop line
-        if not self.pause_stop_detection:
-            if self.tag_det_id!=163:
-                mask_stop_l=cv2.inRange(hsv, *STOP_MASK_L)
-                mask_stop_h=cv2.inRange(hsv, *STOP_MASK_H)
-                mask_stop = mask_stop_h + mask_stop_l
-            else:
-                mask_stop = cv2.inRange(hsv, *STOP_MASK_BLUE)
+        # stop line (red)
+        if not self.pause_stop_detection and self.tag_det_id != 163:
+            mask_stop_l=cv2.inRange(hsv, *STOP_MASK_L)
+            mask_stop_h=cv2.inRange(hsv, *STOP_MASK_H)
+            mask_stop = mask_stop_h + mask_stop_l
 
             cont_stop, hierarchy_stop = cv2.findContours(mask_stop,
-                                                   cv2.RETR_EXTERNAL,
-                                                   cv2.CHAIN_APPROX_NONE)
-            if len(cont_stop)>0:
+                                                         cv2.RETR_EXTERNAL,
+                                                         cv2.CHAIN_APPROX_NONE)
+            if len(cont_stop) > 0:
                 max_contour = max(cont_stop, key=cv2.contourArea)
-                m_area=cv2.contourArea(max_contour)
+                m_area = cv2.contourArea(max_contour)
                 # self.loginfo("contour area: {}".format(m_area))
-                if m_area>3500:
+                if m_area > 3500:
                     M = cv2.moments(max_contour)
                     try:
                         cx = int(M['m10'] / M['m00'])
                         cy = int(M['m01'] / M['m00'])
                         # enable PD controller to stop
-                        self.controller.PD_all.proportional = 1.0-cy/(crop_height+20)  # lf_offset
+                        self.controller.PD_all.proportional = 1.0 - cy / (crop_height + 20)  # lf_offset
                         if self.stopping_timer is None:
                             if DEBUG:
                                 self.loginfo("Stopping")
                             self.controller.PD_all.set_disable(None)
-                            self.stopping_timer=rospy.Timer(rospy.Duration(4.5),self.cb_stopping_timeup,oneshot=True)
+                            self.stopping_timer = rospy.Timer(rospy.Duration(4.5), self.cb_stopping_timeup,
+                                                              oneshot=True)
                             self.state = self.tag_to_state.get(self.tag_det_id, State.LF)
                             self.loginfo(self.state)
-                            if self.state in {State.STRAIGHT,State.LEFT}:
+                            if self.state in {State.STRAIGHT, State.LEFT}:
                                 self.loginfo("Go straight/left, mask right")
-                                self.masking_timer = rospy.Timer(rospy.Duration(10.0), self.cb_masking_timeup, oneshot=True)
+                                self.masking_timer = rospy.Timer(rospy.Duration(10.0), self.cb_masking_timeup,
+                                                                 oneshot=True)
                         if DEBUG:
                             cv2.drawContours(crop, contours, max_idx, (255, 0, 0), 3)
                             cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
@@ -291,9 +291,26 @@ class ControlNode(DTROS):
                 # lost stop line detection
                 self.controller.PD_all.proportional = 0.0
 
-    def cb_tagid(self,msg):
+    def cb_tag(self,msg):
         if msg.data:
-            self.tag_det_id=msg.data
+            self.tag_det=msg
+            self.tag_det_id = self.tag_det.tag_id
+            stop_start_distance=0.5
+            min_distance=0.2
+            dist=self.tag_det.transform.translation.z
+            if self.tag_det_id == 163 and dist < stop_start_distance:
+                # enable PD controller to stop
+                if self.stopping_timer is None:
+                    if DEBUG:
+                        self.loginfo("Stopping (blue)")
+                    self.controller.PD_all.set_disable(None)
+                    self.stopping_timer = rospy.Timer(rospy.Duration(4.5), self.cb_stopping_timeup,
+                                                      oneshot=True)
+                    self.state = self.tag_to_state.get(self.tag_det_id, State.LF)
+                    self.loginfo(self.state)
+                else:
+                    # update error
+                    self.controller.PD_all.proportional = max(0,dist-0.2)/(stop_start_distance-min_distance)
 
     def cb_tof(self,msg):  # tof sensor, Range msg, in meters
         self.tof_det_range = msg.range if msg.min_range>msg.range>msg.max_range else np.inf
@@ -313,6 +330,8 @@ class ControlNode(DTROS):
                 self.loginfo("Stopping time up, but think of the ducklings!")
             self.stopping_timer = rospy.Timer(rospy.Duration(3.0), self.cb_stopping_timeup, oneshot=True)
             return
+        # try to see duck
+
         if DEBUG:
             self.loginfo("Stopping time up. Pause stop detection.")
         self.pause_stop_detection = True

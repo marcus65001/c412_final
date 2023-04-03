@@ -10,9 +10,9 @@ from turbojpeg import TurboJPEG, TJPF_GRAY
 from cv_bridge import CvBridge
 import yaml
 from dt_apriltags import Detector
-from duckietown_msgs.srv import ChangePattern, ChangePatternResponse
+from duckietown_msgs.msg import AprilTagDetection
 from std_msgs.msg import String, Int32, Bool
-from tf import transformations as tr
+import tf
 from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 
 
@@ -89,6 +89,13 @@ class TagDetectorNode(DTROS):
             Int32,
             queue_size=1
         )
+
+        self.pub_at = rospy.Publisher(
+            "~tag",
+            AprilTagDetection,
+            queue_size=1
+        )
+
 
     def read_image(self, msg):
         try:
@@ -188,61 +195,17 @@ class TagDetectorNode(DTROS):
 
         return img
 
-    def cb_tag_pose_update(self, timer):
-        if self.tag_det is None:
-            return
-        rcand = self.tag_det
-        self.tag_det = None
-        t = np.zeros((4, 4))
-        t[:3, :3] = np.array(rcand.pose_R)
-        t[3, 3] = 1.
-        rot = tr.euler_from_matrix(t)
-        # 1roll->pitch, 2pitch->yaw, 3yaw->roll
-        # rotq = Quaternion(*tr.quaternion_from_euler(rot[2]-1.5708, -rot[0], -1.5708-rot[1]))
-        rotq = Quaternion(*tr.quaternion_from_euler(*rot))
-        tmsg = TransformStamped(
-            child_frame_id="{}/at_det".format(self.veh),
-            transform=Transform(
-                translation=Vector3(*rcand.pose_t), rotation=rotq
-            ),
-        )
-        tmsg.header.stamp = rospy.Time.now()
-        tmsg.header.frame_id = "{}/camera_optical_frame".format(self.veh)
-        self._tf_broadcaster.sendTransform(
-            tmsg
-        )
-        if rcand.tag_id in self.tag_all_id:
-            try:
-                t_at_base = self._tf_buffer.lookup_transform("{}/at_det".format(self.veh),
-                                                             "{}/footprint".format(self.veh)
-                                                             , rospy.Time(0))
-                t_at_base.child_frame_id = "{}/v_pred".format(self.veh)
-                t_at_base.header.frame_id = "at_{}_static".format(rcand.tag_id)
-                self.log("t_at_base: {}".format(t_at_base))
-                self._tf_broadcaster.sendTransform(
-                    t_at_base
-                )
-
-                # project
-                t_base_w = self._tf_buffer.lookup_transform(
-                    "world",
-                    "{}/v_pred".format(self.veh),
-                    rospy.Time(0))
-
-                pose_new = Pose(Point(t_base_w.transform.translation.x,
-                                      t_base_w.transform.translation.y,
-                                      0),
-                                t_base_w.transform.rotation)
-                self.pub_pose.publish(pose_new)
-            except Exception as e:
-                self.log(e)
-
     def cb_img(self, msg):
         # image callback
         if self._bridge and (self.ci_cam_matrix is not None):
             # rectify
             # uimg=cv2.UMat(self.read_image(msg))
             self.image = self.read_image(msg)
+
+    def _matrix_to_quaternion(r):
+        T = np.array(((0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 1)), dtype=np.float64)
+        T[0:3, 0:3] = r
+        return tf.transformations.quaternion_from_matrix(T)
 
     def run(self):
         rate = rospy.Rate(2)
@@ -255,12 +218,26 @@ class TagDetectorNode(DTROS):
                 # tag detection
                 td_image = self.tag_detect(g_image)
                 # tag id message
-                tagid_msg = Int32()
                 if self.tag_det is not None:
-                    tagid_msg.data = self.tag_det.tag_id
-                else:
-                    tagid_msg.data = -1
-                self.pub_at_id.publish(tagid_msg)
+                    q = self._matrix_to_quaternion(self.tag_det.pose_R)
+                    p = self.tag_det.pose_t.T[0]
+                    # create single tag detection object
+                    tag_msg = AprilTagDetection(
+                        transform=Transform(
+                            translation=Vector3(x=p[0], y=p[1], z=p[2]),
+                            rotation=Quaternion(x=q[0], y=q[1], z=q[2], w=q[3]),
+                        ),
+                        tag_id=self.tag_det.tag_id,
+                        tag_family=str(self.tag_det.tag_family),
+                        hamming=self.tag_det.hamming,
+                        decision_margin=self.tag_det.decision_margin,
+                        homography=self.tag_det.homography.flatten().astype(np.float32).tolist(),
+                        center=self.tag_det.center.tolist(),
+                        corners=self.tag_det.corners.flatten().tolist(),
+                        pose_error=self.tag_det.pose_err,
+                    )
+                    self.pub_at_id.publish(tag_msg)
+
                 rate.sleep()
 
 
