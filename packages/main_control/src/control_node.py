@@ -10,7 +10,7 @@ from turbojpeg import TurboJPEG
 import cv2
 import numpy as np
 import math
-from duckietown_msgs.msg import AprilTagDetectionArray, AprilTagDetection
+from duckietown_msgs.msg import AprilTagDetection
 from duckietown_msgs.msg import WheelsCmdStamped, Twist2DStamped
 from duckietown_msgs.srv import ChangePattern, ChangePatternResponse
 from std_msgs.msg import Int32, Bool
@@ -177,14 +177,10 @@ class ControlNode(DTROS):
                                     self.callback,
                                     queue_size=1,
                                     buff_size="20MB")
-        self.tagid_sub = rospy.Subscriber("~tagid",
-                                          Int32,
-                                          self.cb_tagid,
+        self.tag_sub = rospy.Subscriber("~tag",
+                                          AprilTagDetection,
+                                          self.cb_tag,
                                           queue_size=1)
-        self.tof_sub = rospy.Subscriber("~tof_range",
-                                        Range,
-                                        self.cb_tof,
-                                        queue_size=1)
 
 
         # Shutdown hook
@@ -292,7 +288,8 @@ class ControlNode(DTROS):
                 self.controller.PD_all.proportional = 0.0
 
     def cb_tag(self,msg):
-        if msg.data:
+        if msg.tag_id:
+            # self.loginfo(msg)
             self.tag_det=msg
             self.tag_det_id = self.tag_det.tag_id
             stop_start_distance=0.5
@@ -311,10 +308,6 @@ class ControlNode(DTROS):
                 else:
                     # update error
                     self.controller.PD_all.proportional = max(0,dist-0.2)/(stop_start_distance-min_distance)
-
-    def cb_tof(self,msg):  # tof sensor, Range msg, in meters
-        self.tof_det_range = msg.range if msg.min_range>msg.range>msg.max_range else np.inf
-
 
     def callback(self, msg):
         img = self.jpeg.decode(msg.data)
@@ -384,7 +377,8 @@ class ControlNode(DTROS):
 
     def drive(self):
         self.loginfo(self.controller)
-        self.vel_pub.publish(self.controller.get_twist(self))
+        self.loginfo(tw:=self.controller.get_twist(self))
+        self.vel_pub.publish(tw)
 
     def hook(self):
         self.loginfo("SHUTTING DOWN")
@@ -397,7 +391,7 @@ class ControlNode(DTROS):
 if __name__ == "__main__":
     node = ControlNode("control_node")
     rate = rospy.Rate(8)  # 8hz
-    rospy.sleep(rospy.Duration(5))
+    rospy.sleep(rospy.Duration(6))
     # t_duck_det=rospy.Timer(rospy.Duration(0.5),node.cb_duck_det)
     while not rospy.is_shutdown():
         node.drive()

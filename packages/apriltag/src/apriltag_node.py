@@ -84,12 +84,6 @@ class TagDetectorNode(DTROS):
             dt_help="The stream of JPEG compressed images from the modified camera feed",
         )
 
-        self.pub_at_id = rospy.Publisher(
-            "~tagid",
-            Int32,
-            queue_size=1
-        )
-
         self.pub_at = rospy.Publisher(
             "~tag",
             AprilTagDetection,
@@ -202,7 +196,7 @@ class TagDetectorNode(DTROS):
             # uimg=cv2.UMat(self.read_image(msg))
             self.image = self.read_image(msg)
 
-    def _matrix_to_quaternion(r):
+    def _matrix_to_quaternion(self,r):
         T = np.array(((0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 1)), dtype=np.float64)
         T[0:3, 0:3] = r
         return tf.transformations.quaternion_from_matrix(T)
@@ -236,7 +230,7 @@ class TagDetectorNode(DTROS):
                         corners=self.tag_det.corners.flatten().tolist(),
                         pose_error=self.tag_det.pose_err,
                     )
-                    self.pub_at_id.publish(tag_msg)
+                    self.pub_at.publish(tag_msg)
 
                 rate.sleep()
 
