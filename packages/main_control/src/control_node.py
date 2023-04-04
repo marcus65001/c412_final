@@ -116,6 +116,8 @@ class LF_Controller(Controller):
         if omega_cand is None:
             if node.state==State.LEFT:
                 omega_cand=self.left_turn_omega
+            elif node.state==State.LF_ENGLISH:
+                omega_cand=-self.left_turn_omega
             else:
                 omega_cand=0
         return max(min(omega_cand,self.cap_omega)*self.PD_all.get(),-self.cap_omega)
@@ -156,6 +158,8 @@ class ControlNode(DTROS):
         self.det_duck = False
         self.offset_sign = 1
         self.lf_img=None
+        self.tof_flag=0
+        self.tof_stopping_distance=0.3
 
         # Timers
         self.stopping_timer = None
@@ -181,6 +185,10 @@ class ControlNode(DTROS):
                                           AprilTagDetection,
                                           self.cb_tag,
                                           queue_size=1)
+        self.tof_sub = rospy.Subscriber("~tof_range",
+                                        Range,
+                                        self.cb_tof,
+                                        queue_size=1)
 
 
         # Shutdown hook
@@ -293,9 +301,9 @@ class ControlNode(DTROS):
             self.tag_det=msg
             self.tag_det_id = self.tag_det.tag_id
             stop_start_distance=0.5
-            min_distance=0.2
+            min_distance=0.1
             dist=self.tag_det.transform.translation.z
-            if self.tag_det_id == 163 and dist < stop_start_distance:
+            if self.tag_det_id == 163 and dist < stop_start_distance and not self.pause_stop_detection:
                 # enable PD controller to stop
                 if self.stopping_timer is None:
                     if DEBUG:
@@ -307,7 +315,7 @@ class ControlNode(DTROS):
                     self.loginfo(self.state)
                 else:
                     # update error
-                    self.controller.PD_all.proportional = max(0,dist-0.2)/(stop_start_distance-min_distance)
+                    self.controller.PD_all.proportional = max(0,dist-min_distance)/(stop_start_distance-min_distance)
 
     def callback(self, msg):
         img = self.jpeg.decode(msg.data)
@@ -328,6 +336,12 @@ class ControlNode(DTROS):
         if DEBUG:
             self.loginfo("Stopping time up. Pause stop detection.")
         self.pause_stop_detection = True
+        # post-stopping for blue crossings
+        if self.tag_det.tag_id == 163:
+            self.loginfo("Blue")
+            # start tof
+            self.tof_flag+=1
+
         if self.state!=State.STRAIGHT:
             self.loginfo("Short pause.")
             self.pause_timer = rospy.Timer(rospy.Duration(3.0), self.cb_pause_timeup, oneshot=True)
@@ -374,10 +388,22 @@ class ControlNode(DTROS):
         else:
             self.det_duck=False
 
+    def cb_tof(self,msg):  # tof sensor, Range msg, in meters
+        if self.tof_flag==1:
+            tof_det_range = msg.range if msg.min_range>msg.range>msg.max_range else np.inf
+            if tof_det_range<self.tof_stopping_distance:
+                if DEBUG:
+                    self.loginfo("Avoid/LF_ENGLISH.")
+                self.state = State.LF_ENGLISH
+                self.offset_sign = -1
+                self.controller.PD_omega.reset()
+                self.avoid_timer = rospy.Timer(rospy.Duration(5.0), self.cb_avoiding_timeup, oneshot=True)
+                self.tof_flag += 1
 
     def drive(self):
         self.loginfo(self.controller)
-        self.loginfo(tw:=self.controller.get_twist(self))
+        tw = self.controller.get_twist(self)
+        # self.loginfo(tw)
         self.vel_pub.publish(tw)
 
     def hook(self):
