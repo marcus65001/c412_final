@@ -29,6 +29,8 @@ DEBUG = True
 class State(Enum):
     LF = auto()
     LF_ENGLISH = auto()
+    LF_SWITCH_TO = auto()
+    LF_SWITCH_BACK = auto()
     PARK = auto()
     STRAIGHT=auto()
     LEFT= auto()
@@ -114,7 +116,7 @@ class LF_Controller(Controller):
     def get_omega(self,node):
         omega_cand=self.PD_omega.get()
         if omega_cand is None:
-            if node.state==State.LEFT:
+            if node.state in {State.LEFT, State.LF}:
                 omega_cand=self.left_turn_omega
             elif node.state==State.LF_ENGLISH:
                 omega_cand=-self.left_turn_omega
@@ -149,14 +151,31 @@ class ControlNode(DTROS):
             50:State.LEFT
         }
 
+        self.PD_param={
+            # "regular":(-0.045, 0.0035),
+            "regular": (-0.040, 0.0032),
+            "reduced":(-0.036, 0.0024)
+        }
+
+        self.lf_offset={
+            State.LF:220,
+            State.LF_ENGLISH:-220,
+            State.LF_SWITCH_TO:0,
+            State.LF_SWITCH_BACK: 0
+        }
+
+        self.duck_template = cv2.imread('/data/duck.png')
+
         # Properties
+        self.img=None
         self.state = State.LF
         self.controller = LF_Controller(0.3)
         self.pause_stop_detection = False
         self.tag_det_id = 0
         self.tag_det=None
-        self.det_duck = False
-        self.offset_sign = 1
+        self.det_no_duck = 0
+        self.no_duck_confirmations=5
+        # self.offset_sign = 1
         self.lf_img=None
         self.tof_flag=0
         self.tof_stopping_distance=0.3
@@ -166,6 +185,8 @@ class ControlNode(DTROS):
         self.masking_timer = None
         self.pause_timer=None
         self.avoid_timer=None
+        self.duck_timer=None
+        self.switch_timer=None
 
         # Publishers & Subscribers
         self.pub = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed",
@@ -236,7 +257,7 @@ class ControlNode(DTROS):
             try:
                 cx = int(M['m10'] / M['m00'])
                 cy = int(M['m01'] / M['m00'])
-                self.controller.PD_omega.proportional = cx - int(crop_width / 2) + 220*self.offset_sign  # lf_offset
+                self.controller.PD_omega.proportional = cx - int(crop_width / 2) + self.lf_offset[self.state]  # lf_offset
                 if DEBUG:
                     cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
                     cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
@@ -264,7 +285,7 @@ class ControlNode(DTROS):
                         cx = int(M['m10'] / M['m00'])
                         cy = int(M['m01'] / M['m00'])
                         # enable PD controller to stop
-                        self.controller.PD_all.proportional = 1.0 - cy / (crop_height + 20)  # lf_offset
+                        self.controller.PD_all.proportional = 1.0 - cy / (crop_height + 20)
                         if self.stopping_timer is None:
                             if DEBUG:
                                 self.loginfo("Stopping")
@@ -288,7 +309,7 @@ class ControlNode(DTROS):
                     if DEBUG:
                         self.loginfo("Large stop contour, avoid/LF_ENGLISH.")
                     self.state = State.LF_ENGLISH
-                    self.offset_sign = -1
+                    # self.offset_sign = -1
                     self.controller.PD_omega.reset()
                     self.avoid_timer = rospy.Timer(rospy.Duration(5.0), self.cb_avoiding_timeup, oneshot=True)
             elif self.stopping_timer is not None:
@@ -313,33 +334,49 @@ class ControlNode(DTROS):
                                                       oneshot=True)
                     self.state = self.tag_to_state.get(self.tag_det_id, State.LF)
                     self.loginfo(self.state)
+                    # turn on duck detection
+                    if DEBUG:
+                        self.loginfo("Duck detection on.")
+                    if self.duck_timer is None:
+                        self.duck_timer = rospy.Timer(rospy.Duration(0.5), node.cb_duck_det)
                 else:
                     # update error
                     self.controller.PD_all.proportional = max(0,dist-min_distance)/(stop_start_distance-min_distance)
+                    if self.controller.PD_all.proportional<0.1:
+                        self.controller.PD_all.proportional=0
 
     def callback(self, msg):
-        img = self.jpeg.decode(msg.data)
+        self.img = self.jpeg.decode(msg.data)
         if self.state!=State.PARK:
-            self.cb_img_lf(img)
+            self.cb_img_lf(self.img)
         else:
             # parking
             pass
 
     def cb_stopping_timeup(self,te):
-        if self.det_duck:
+        if self.det_no_duck<self.no_duck_confirmations:
             if DEBUG:
                 self.loginfo("Stopping time up, but think of the ducklings!")
             self.stopping_timer = rospy.Timer(rospy.Duration(3.0), self.cb_stopping_timeup, oneshot=True)
             return
+        else:
+            # disable duck detection
+            if DEBUG:
+                self.loginfo("Got {} confirmations, disable duck detection.".format(self.no_duck_confirmations))
+            if self.duck_timer is not None:
+                self.duck_timer.shutdown()
+                self.duck_timer=None
         # try to see duck
 
         if DEBUG:
-            self.loginfo("Stopping time up. Pause stop detection.")
+            self.loginfo("Stopping time up. Pause stop detection. {}".format(self.tag_det.tag_id))
         self.pause_stop_detection = True
         # post-stopping for blue crossings
         if self.tag_det.tag_id == 163:
             self.loginfo("Blue")
             # start tof
+            if DEBUG and self.tof_flag==0:
+                self.loginfo("Veh avoidance enabled")
             self.tof_flag+=1
 
         if self.state!=State.STRAIGHT:
@@ -370,35 +407,51 @@ class ControlNode(DTROS):
         if DEBUG:
             self.loginfo("Avoiding time up, back to LF.")
         self.state = State.LF
-        self.offset_sign = 1
+        # self.offset_sign = 1
+        self.controller.PD_omega=PD(*self.PD_param["regular"])
         self.controller.PD_omega.reset()
         self.avoid_timer = None
         return
 
     def cb_duck_det(self,te):
         #duck detection
-        template = cv2.imread('/data/duck.png')
-        res = cv2.matchTemplate(self.lf_img, template, cv2.TM_CCORR_NORMED)
+        res = cv2.matchTemplate(self.img[230:,:,:], self.duck_template, cv2.TM_CCORR_NORMED)
         threshold = 0.9
         loc = np.where(res >= threshold)
-        if len(loc[0])>100:
+        if len(loc[0])>200:
             if DEBUG:
                 self.loginfo("See duck")
-            self.det_duck=True
+            self.det_no_duck=0
         else:
-            self.det_duck=False
+            self.loginfo("No duck")
+            self.det_no_duck+=1
+
+    def cb_switching_timeup(self,te):
+        if self.state==State.LF_SWITCH_TO:
+            self.state = State.LF_ENGLISH
+            self.switch_timer = rospy.Timer(rospy.Duration(2.0), self.cb_switching_timeup, oneshot=True)
+        elif self.state==State.LF_ENGLISH:
+            self.state = State.LF_SWITCH_BACK
+            self.switch_timer = rospy.Timer(rospy.Duration(2.0), self.cb_switching_timeup, oneshot=True)
+        self.controller.PD_omega.reset()
+        if DEBUG:
+            self.loginfo("SWITCHING {}".format(self.state))
 
     def cb_tof(self,msg):  # tof sensor, Range msg, in meters
         if self.tof_flag==1:
-            tof_det_range = msg.range if msg.min_range>msg.range>msg.max_range else np.inf
+            tof_det_range = msg.range if msg.min_range<msg.range<msg.max_range else np.inf
+            if DEBUG:
+                self.loginfo("TOF: {}".format(tof_det_range))
             if tof_det_range<self.tof_stopping_distance:
-                if DEBUG:
-                    self.loginfo("Avoid/LF_ENGLISH.")
-                self.state = State.LF_ENGLISH
-                self.offset_sign = -1
+                self.state = State.LF_SWITCH_TO
+                # self.offset_sign = -1
+                self.controller.PD_omega=PD(*self.PD_param["reduced"])
                 self.controller.PD_omega.reset()
-                self.avoid_timer = rospy.Timer(rospy.Duration(5.0), self.cb_avoiding_timeup, oneshot=True)
+                self.switch_timer = rospy.Timer(rospy.Duration(2.0), self.cb_switching_timeup, oneshot=True)
+                self.avoid_timer = rospy.Timer(rospy.Duration(6.5), self.cb_avoiding_timeup, oneshot=True)
                 self.tof_flag += 1
+                if DEBUG:
+                    self.loginfo("Avoid/LF_ENGLISH. {}".format(self.state))
 
     def drive(self):
         self.loginfo(self.controller)
@@ -418,7 +471,6 @@ if __name__ == "__main__":
     node = ControlNode("control_node")
     rate = rospy.Rate(8)  # 8hz
     rospy.sleep(rospy.Duration(6))
-    # t_duck_det=rospy.Timer(rospy.Duration(0.5),node.cb_duck_det)
     while not rospy.is_shutdown():
         node.drive()
         rate.sleep()
