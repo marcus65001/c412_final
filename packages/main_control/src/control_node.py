@@ -354,19 +354,21 @@ class ControlNode(DTROS):
             pass
 
     def cb_stopping_timeup(self,te):
-        if self.det_no_duck<self.no_duck_confirmations:
-            if DEBUG:
-                self.loginfo("Stopping time up, but think of the ducklings!")
-            self.stopping_timer = rospy.Timer(rospy.Duration(3.0), self.cb_stopping_timeup, oneshot=True)
-            return
-        else:
-            # disable duck detection
-            if DEBUG:
-                self.loginfo("Got {} confirmations, disable duck detection.".format(self.no_duck_confirmations))
-            if self.duck_timer is not None:
-                self.duck_timer.shutdown()
-                self.duck_timer=None
-        # try to see duck
+        if self.duck_timer is not None:
+            # try to see duck
+            if self.det_no_duck<self.no_duck_confirmations:
+                if DEBUG:
+                    self.loginfo("Stopping time up, but think of the ducklings!")
+                self.stopping_timer = rospy.Timer(rospy.Duration(3.0), self.cb_stopping_timeup, oneshot=True)
+                return
+            else:
+                # disable duck detection
+                if DEBUG:
+                    self.loginfo("Got {} confirmations, disable duck detection.".format(self.no_duck_confirmations))
+                if self.duck_timer is not None:
+                    self.duck_timer.shutdown()
+                    self.duck_timer=None
+
 
         if DEBUG:
             self.loginfo("Stopping time up. Pause stop detection. {}".format(self.tag_det.tag_id))
@@ -415,16 +417,26 @@ class ControlNode(DTROS):
 
     def cb_duck_det(self,te):
         #duck detection
-        res = cv2.matchTemplate(self.img[230:,:,:], self.duck_template, cv2.TM_CCORR_NORMED)
-        threshold = 0.9
-        loc = np.where(res >= threshold)
-        if len(loc[0])>200:
+        # res = cv2.matchTemplate(self.img[230:,:,:], self.duck_template, cv2.TM_CCORR_NORMED)
+        # threshold = 0.9
+        # loc = np.where(res >= threshold)
+        # if len(loc[0])>200:
+        #     if DEBUG:
+        #         self.loginfo("See duck")
+        #     self.det_no_duck=0
+        # else:
+        #     self.loginfo("No duck")
+        #     self.det_no_duck+=1
+        hsv_duck=cv2.cvtColor(self.img[200:, :, :], cv2.COLOR_BGR2HSV)
+        mask_duck = cv2.inRange(hsv_duck, *DUCK_MASK)
+        if (area:=(mask_duck > 0).sum()) > 9400:
             if DEBUG:
-                self.loginfo("See duck")
+                self.loginfo("See duck {}".format(area))
             self.det_no_duck=0
         else:
-            self.loginfo("No duck")
+            self.loginfo("No duck {}".format(area))
             self.det_no_duck+=1
+
 
     def cb_switching_timeup(self,te):
         if self.state==State.LF_SWITCH_TO:
