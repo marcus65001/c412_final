@@ -23,6 +23,11 @@ STOP_MASK_L = [(0, 70, 50), (10, 255, 255)]
 STOP_MASK_H = [(170, 70, 50), (180, 255, 255)]
 DUCK_MASK=[(6,50,0),(26,255,255)]
 STOP_MASK_BLUE=[(105,95,95),(120,255,255)]
+PD_param={
+            # "regular":(-0.045, 0.0035),
+            "regular": (-0.0475, 0.00375),
+            "reduced":(-0.036, 0.0024)
+        }
 DEBUG = True
 
 
@@ -102,9 +107,9 @@ class Controller:
 
 
 class LF_Controller(Controller):
-    def __init__(self,velocity=0.3,left_turn_omega=4):
+    def __init__(self,velocity=0.3,left_turn_omega=3.5):
         super().__init__()
-        self.PD_omega = PD(-0.045, 0.0035)
+        self.PD_omega = PD(*PD_param["regular"])
         self.PD_all = PD(1.0,0.002)
         self.PD_all.set_disable(1.0)
         self.constant_v = ConstantControl(velocity)
@@ -151,15 +156,15 @@ class ControlNode(DTROS):
             50:State.LEFT
         }
 
-        self.PD_param={
-            # "regular":(-0.045, 0.0035),
-            "regular": (-0.040, 0.0032),
-            "reduced":(-0.036, 0.0024)
-        }
+        # self.PD_param={
+        #     # "regular":(-0.045, 0.0035),
+        #     "regular": (-0.0435, 0.0034),
+        #     "reduced":(-0.036, 0.0024)
+        # }
 
         self.lf_offset={
-            State.LF:220,
-            State.LF_ENGLISH:-220,
+            State.LF:210,
+            State.LF_ENGLISH:-210,
             State.LF_SWITCH_TO:0,
             State.LF_SWITCH_BACK: 0
         }
@@ -179,6 +184,7 @@ class ControlNode(DTROS):
         self.lf_img=None
         self.tof_flag=0
         self.tof_stopping_distance=0.3
+        self.tof_stopping_start_offset=0.3
 
         # Timers
         self.stopping_timer = None
@@ -225,7 +231,7 @@ class ControlNode(DTROS):
         if not isinstance(self.controller,LF_Controller):
             return
         # Part for Lane Following Detection
-        crop = img[330:-1, :, :]
+        crop = img[340:-1, :, :]
         if self.state in {State.LEFT,State.STRAIGHT}:
             crop[:,-200:,:]=0
         self.lf_img=crop
@@ -296,7 +302,7 @@ class ControlNode(DTROS):
                             self.loginfo(self.state)
                             if self.state in {State.STRAIGHT, State.LEFT}:
                                 self.loginfo("Go straight/left, mask right")
-                                self.masking_timer = rospy.Timer(rospy.Duration(10.0), self.cb_masking_timeup,
+                                self.masking_timer = rospy.Timer(rospy.Duration(7.5), self.cb_masking_timeup,
                                                                  oneshot=True)
                         if DEBUG:
                             cv2.drawContours(crop, contours, max_idx, (255, 0, 0), 3)
@@ -371,22 +377,17 @@ class ControlNode(DTROS):
 
 
         if DEBUG:
-            self.loginfo("Stopping time up. Pause stop detection. {}".format(self.tag_det.tag_id))
+            self.loginfo("Stopping time up. Pause stop detection.")
+            if self.tag_det is not None:
+                self.loginfo(self.tag_det.tag_id)
         self.pause_stop_detection = True
-        # post-stopping for blue crossings
-        if self.tag_det.tag_id == 163:
-            self.loginfo("Blue")
-            # start tof
-            if DEBUG and self.tof_flag==0:
-                self.loginfo("Veh avoidance enabled")
-            self.tof_flag+=1
 
         if self.state!=State.STRAIGHT:
             self.loginfo("Short pause.")
-            self.pause_timer = rospy.Timer(rospy.Duration(3.0), self.cb_pause_timeup, oneshot=True)
+            self.pause_timer = rospy.Timer(rospy.Duration(4.0), self.cb_pause_timeup, oneshot=True)
         else:
             self.loginfo("Long pause.")
-            self.pause_timer = rospy.Timer(rospy.Duration(9.0), self.cb_pause_timeup, oneshot=True)
+            self.pause_timer = rospy.Timer(rospy.Duration(8.0), self.cb_pause_timeup, oneshot=True)
         self.controller.PD_all.set_disable(1.0)
         self.stopping_timer=None
         return
@@ -396,6 +397,14 @@ class ControlNode(DTROS):
             self.loginfo("Pause time up.")
         self.pause_timer=None
         self.pause_stop_detection=False
+
+        # post-stopping for blue crossings
+        if self.tag_det.tag_id == 163:
+            self.loginfo("Blue")
+            # start tof
+            if DEBUG and self.tof_flag == 0:
+                self.loginfo("Veh avoidance enabled")
+            self.tof_flag += 1
         return
 
     def cb_masking_timeup(self,te):
@@ -410,7 +419,7 @@ class ControlNode(DTROS):
             self.loginfo("Avoiding time up, back to LF.")
         self.state = State.LF
         # self.offset_sign = 1
-        self.controller.PD_omega=PD(*self.PD_param["regular"])
+        self.controller.PD_omega=PD(*PD_param["regular"])
         self.controller.PD_omega.reset()
         self.avoid_timer = None
         return
@@ -441,10 +450,10 @@ class ControlNode(DTROS):
     def cb_switching_timeup(self,te):
         if self.state==State.LF_SWITCH_TO:
             self.state = State.LF_ENGLISH
-            self.switch_timer = rospy.Timer(rospy.Duration(2.0), self.cb_switching_timeup, oneshot=True)
+            self.switch_timer = rospy.Timer(rospy.Duration(1.3), self.cb_switching_timeup, oneshot=True)
         elif self.state==State.LF_ENGLISH:
             self.state = State.LF_SWITCH_BACK
-            self.switch_timer = rospy.Timer(rospy.Duration(2.0), self.cb_switching_timeup, oneshot=True)
+            self.switch_timer = rospy.Timer(rospy.Duration(1.3), self.cb_switching_timeup, oneshot=True)
         self.controller.PD_omega.reset()
         if DEBUG:
             self.loginfo("SWITCHING {}".format(self.state))
@@ -454,10 +463,21 @@ class ControlNode(DTROS):
             tof_det_range = msg.range if msg.min_range<msg.range<msg.max_range else np.inf
             if DEBUG:
                 self.loginfo("TOF: {}".format(tof_det_range))
-            if tof_det_range<self.tof_stopping_distance:
+            if self.stopping_timer is not None:
+                self.controller.PD_all.proportional = np.clip(tof_det_range-self.tof_stopping_distance,
+                                                                    0,
+                                                                    self.tof_stopping_start_offset)\
+                                                      /self.tof_stopping_start_offset
+            if tof_det_range<self.tof_stopping_distance+self.tof_stopping_start_offset and self.stopping_timer is None and not self.pause_stop_detection:
+                if DEBUG:
+                    self.loginfo("Stopping")
+                self.controller.PD_all.set_disable(None)
+                self.stopping_timer = rospy.Timer(rospy.Duration(4.5), self.cb_stopping_timeup,
+                                                  oneshot=True)
+            if self.pause_stop_detection:
                 self.state = State.LF_SWITCH_TO
                 # self.offset_sign = -1
-                self.controller.PD_omega=PD(*self.PD_param["reduced"])
+                self.controller.PD_omega=PD(*PD_param["reduced"])
                 self.controller.PD_omega.reset()
                 self.switch_timer = rospy.Timer(rospy.Duration(2.0), self.cb_switching_timeup, oneshot=True)
                 self.avoid_timer = rospy.Timer(rospy.Duration(6.5), self.cb_avoiding_timeup, oneshot=True)
