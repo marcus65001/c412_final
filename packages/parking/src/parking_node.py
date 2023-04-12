@@ -3,7 +3,7 @@
 import rospy
 
 from duckietown.dtros import DTROS, NodeType
-from sensor_msgs.msg import CameraInfo, CompressedImage
+from sensor_msgs.msg import CameraInfo, CompressedImage, Range
 from std_msgs.msg import Float32
 from turbojpeg import TurboJPEG
 import cv2
@@ -46,10 +46,10 @@ class ParkingNode(DTROS):
         # }
 
         self.stall_numbers = {
-            1: [207, "Left", 0.5],
-            2: [226, "Left", 5.4],
-            3: [228, "Right", -2.8],
-            4: [75, "Right", -5.4],
+            1: [207, "Left", 0.4],
+            2: [226, "Left", 5.8],
+            3: [228, "Right", -2.1],
+            4: [75, "Right", -5.8],
         }
 
         self.proportional = None
@@ -65,15 +65,19 @@ class ParkingNode(DTROS):
         self.D = -0.0025
         self.last_error = 0
         self.last_time = rospy.get_time()
+        self.image_area = 640*480
+        self.april_to_image_ratio = 0.0
 
         self.apriltag_corners = None
         self.at_area = 0.0
         self.apriltag_center = None
         self.apriltag_id = None
         self.add_patch = True
+        self.tof_det_range = None
 
         # self.enter = False
-        # self.timer = None
+        self.timer = None
+        self.stop_detection = False
         # self.remote = True
 
         self.v = 0.0
@@ -92,6 +96,11 @@ class ParkingNode(DTROS):
                                     self.callback,
                                     queue_size=1,
                                     buff_size="20MB")
+
+        self.tof_sub = rospy.Subscriber("~tof_range",
+                                        Range,
+                                        self.cb_tof,
+                                        queue_size=1)
 
         self.vel_pub = rospy.Publisher("/" + self.veh + "/car_cmd_switch_node/cmd",
                                        Twist2DStamped,
@@ -117,13 +126,27 @@ class ParkingNode(DTROS):
                 self.apriltag_corners = msg.corners
                 # self.loginfo("Corners = " + str(self.apriltag_corners))
                 self.at_area = (self.apriltag_corners[4]-self.apriltag_corners[0])*(self.apriltag_corners[1]-self.apriltag_corners[5])
+                self.april_to_image_ratio = self.at_area / self.image_area
                 # self.loginfo("Area = " + str(self.at_area))
 
             # if self.stall_numbers.get(self.stall_number)[0] == self.apriltag_id:
             #     self.pixel_dist = math.sqrt(math.pow((self.midpoint_x - self.apriltag_center[0]), 2))
             #     self.prop_turn = self.pixel_dist
 
+    def cb_tof(self, msg):  # tof sensor, Range msg, in meters
+
+        self.tof_det_range = msg.range if msg.min_range < msg.range < msg.max_range else np.inf
+        if DEBUG_TEXT:
+            self.loginfo("TOF DISTANCE: " + str(self.tof_det_range))
     def callback(self, msg):
+
+        if self.timer is None:
+            self.stop_detection = True
+            self.loginfo("Timer set")
+            self.timer = rospy.Timer(rospy.Duration(1.2), self.cb_timer, oneshot=True)
+
+        if self.stop_detection:
+            return
 
         img = self.jpeg.decode(msg.data)
         if self.add_patch:
@@ -187,6 +210,7 @@ class ParkingNode(DTROS):
             # self.twist.omega = 0
             # self.last_error = 0
             self.parking_action()
+
         else:
 
             P = - self.proportional * self.P
@@ -197,19 +221,19 @@ class ParkingNode(DTROS):
             self.last_time = rospy.get_time()
             D = d_error * self.D
 
-            if self.at_area > 9000 or self.apriltag_id == None:
+            if self.tof_det_range < 0.2:
                 self.twist.v = 0.0
                 self.twist.omega = 0.0
-                if self.apriltag_id == self.stall_numbers.get(self.stall_number)[0]:
-                    rospy.on_shutdown(self.hook)
+                rospy.on_shutdown(self.hook)
+
             else:
                 self.twist.v = self.velocity
                 self.twist.omega = P + D
                 self.loginfo(self.twist.omega)
 
         if DEBUG_TEXT:
-            self.loginfo("TAG DETECTED: " + str(self.apriltag_id))
-            self.loginfo("AREA: " + str(self.at_area))
+            self.loginfo("TAG SELECTED: " + str(self.stall_number))
+            self.loginfo("PROPORTIONAL: " + str(self.proportional))
             self.loginfo([self.twist.v, self.twist.omega])
 
         self.vel_pub.publish(self.twist)
@@ -270,8 +294,8 @@ class ParkingNode(DTROS):
             
     def cb_timer(self, te):
         self.loginfo("Timer Up")
-        self.remote = False
-        self.twist.omega = 0.0
+        self.stop_detection = False
+
 
     def drive(self):
         self.approach_stall()
