@@ -1,6 +1,6 @@
 # parameters
-ARG REPO_NAME="c412_final"
-ARG DESCRIPTION="CMPUT 412 Final Project"
+ARG REPO_NAME="c412e5"
+ARG DESCRIPTION="CMPUT 412 Exercise 5"
 ARG MAINTAINER="Marcus Huang (marcus65001@gmail.com)"
 # pick an icon from: https://fontawesome.com/v4.7.0/icons/
 ARG ICON="cube"
