@@ -14,9 +14,9 @@ dt-launchfile-init
 
 # launching app
 
-dt-exec roslaunch apriltag apriltag_node.launch veh:=csc22909
+# dt-exec roslaunch apriltag apriltag_node.launch veh:=csc22909
 # dt-exec roslaunch lane_follow lane_follow_node.launch veh:=csc22925
-dt-exec roslaunch parking parking_node.launch veh:=csc22909 stall:=4
+dt-exec roslaunch parking parking_node.launch veh:=csc22925 stall:=4
 
 # ----------------------------------------------------------------------------
 # YOUR CODE ABOVE THIS LINE
