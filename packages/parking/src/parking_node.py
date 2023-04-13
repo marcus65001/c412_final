@@ -164,9 +164,6 @@ class ParkingNode(DTROS):
                                        Twist2DStamped,
                                        queue_size=1)
 
-        self.pub = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed",
-                                   CompressedImage,
-                                   queue_size=1)
 
         # Wait a little while before sending motor commands
         rospy.Rate(0.20).sleep()
