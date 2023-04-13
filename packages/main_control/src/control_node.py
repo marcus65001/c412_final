@@ -140,6 +140,7 @@ class ControlNode(DTROS):
         self.node_name = node_name
         self.veh = rospy.get_param("~veh")
         self.stall = rospy.get_param("/stall", "1")
+        self.loginfo("TARGET STALL: {}".format(self.stall))
 
         self.params = {}
 

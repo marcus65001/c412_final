@@ -24,7 +24,7 @@ class ParkingNode(DTROS):
     def __init__(self, node_name):
         super(ParkingNode, self).__init__(node_name=node_name, node_type=NodeType.GENERIC)
         self.node_name = node_name
-        self.veh = rospy.get_param("~veh")
+        self.veh = rospy.get_param("~veh","csc22925")
         self.stall_number = rospy.get_param("/stall",4)
         
         self.jpeg = TurboJPEG()
@@ -49,7 +49,7 @@ class ParkingNode(DTROS):
             1: [207, "Left", rospy.get_param("/o1",2.4)],
             2: [226, "Left", rospy.get_param("/o2",5.4)],
             3: [228, "Right", rospy.get_param("/o3",-2.4)],
-            4: [75, "Right", rospy.get_param("/o4",-5.4],
+            4: [75, "Right", rospy.get_param("/o4",-5.4)],
         }
 
         self.proportional = None
