@@ -6,7 +6,7 @@
     <group ns="$(arg veh)">
         <node name="$(arg node_name)" pkg="$(arg pkg_name)" type="$(arg node_name).py" output="screen" required="true">
             <param name="veh" value="$(arg veh)" />
-            <param name="stall" value="$(arg stall)" />
+<!--             <param name="stall" value="$(arg stall)" /> -->
             <remap from="~tag" to="/$(arg veh)/apriltag_node/tag"/>
             <remap from="~tof_range" to="/$(arg veh)/front_center_tof_driver_node/range"/>
         </node>

@@ -108,7 +108,7 @@ class Controller:
 
 
 class LF_Controller(Controller):
-    def __init__(self,velocity=0.3,left_turn_omega=2.8):
+    def __init__(self,velocity=0.3,left_turn_omega=3.6):
         super().__init__()
         self.PD_omega = PD(*PD_param["regular"])
         self.PD_all = PD(1.0,0.002)
@@ -139,6 +139,7 @@ class ControlNode(DTROS):
         super(ControlNode, self).__init__(node_name=node_name, node_type=NodeType.GENERIC)
         self.node_name = node_name
         self.veh = rospy.get_param("~veh")
+        self.stall = rospy.get_param("/{}/stall".format(self.veh), "1")
 
         self.params = {}
 
@@ -185,7 +186,7 @@ class ControlNode(DTROS):
         # self.offset_sign = 1
         self.lf_img=None
         self.tof_flag=False
-        self.tof_stopping_distance=0.3
+        self.tof_stopping_distance=0.15
         self.tof_stopping_start_offset=0.3
 
         # Timers
@@ -234,9 +235,11 @@ class ControlNode(DTROS):
         if not isinstance(self.controller,LF_Controller):
             return
         # Part for Lane Following Detection
-        crop = img[340:-1, :, :]
         if self.state in {State.LEFT,State.STRAIGHT}:
+            crop = img[250:-1, :, :]
             crop[:,-200:,:]=0
+        else:
+            crop = img[345:-1, :, :]
         self.lf_img=crop
         if DEBUG:
             rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
@@ -321,7 +324,7 @@ class ControlNode(DTROS):
                     self.state = State.LF_ENGLISH
                     # self.offset_sign = -1
                     self.controller.PD_omega.reset()
-                    self.avoid_timer = rospy.Timer(rospy.Duration(5.0), self.cb_avoiding_timeup, oneshot=True)
+                    self.avoid_timer = rospy.Timer(rospy.Duration(6.0), self.cb_avoiding_timeup, oneshot=True)
             elif self.stopping_timer is not None:
                 # lost stop line detection
                 self.controller.PD_all.proportional = 0.0
@@ -381,11 +384,12 @@ class ControlNode(DTROS):
                     self.duck_timer=None
 
         if self.tag_det is not None:
-            if self.tag_det.tag_id in {227,207,226,228,75}:
+            if self.tag_det.tag_id in {227,207,226,228,75,38}:
                 if DEBUG:
                     self.loginfo("CONTROL END.")
                 # rospy.signal_shutdown("done")
                 self.state=State.PARK
+                self.hook()
                 return
 
         if DEBUG:
@@ -396,7 +400,7 @@ class ControlNode(DTROS):
 
         if self.state!=State.STRAIGHT:
             self.loginfo("Short pause.")
-            self.pause_timer = rospy.Timer(rospy.Duration(4.0), self.cb_pause_timeup, oneshot=True)
+            self.pause_timer = rospy.Timer(rospy.Duration(5.0), self.cb_pause_timeup, oneshot=True)
         else:
             self.loginfo("Long pause.")
             self.pause_timer = rospy.Timer(rospy.Duration(8.0), self.cb_pause_timeup, oneshot=True)
@@ -469,10 +473,10 @@ class ControlNode(DTROS):
     def cb_switching_timeup(self,te):
         if self.state==State.LF_SWITCH_TO:
             self.state = State.LF_ENGLISH
-            self.switch_timer = rospy.Timer(rospy.Duration(1.3), self.cb_switching_timeup, oneshot=True)
+            self.switch_timer = rospy.Timer(rospy.Duration(2.5), self.cb_switching_timeup, oneshot=True)
         elif self.state==State.LF_ENGLISH:
             self.state = State.LF_SWITCH_BACK
-            self.switch_timer = rospy.Timer(rospy.Duration(0.5), self.cb_switching_timeup, oneshot=True)
+            self.switch_timer = rospy.Timer(rospy.Duration(2.3), self.cb_switching_timeup, oneshot=True)
         self.controller.PD_omega.reset()
         if DEBUG:
             self.loginfo("SWITCHING {}".format(self.state))
@@ -503,7 +507,7 @@ class ControlNode(DTROS):
                 self.controller.PD_omega=PD(*PD_param["reduced"])
                 self.controller.PD_omega.reset()
                 self.switch_timer = rospy.Timer(rospy.Duration(2.0), self.cb_switching_timeup, oneshot=True)
-                self.avoid_timer = rospy.Timer(rospy.Duration(5.5), self.cb_avoiding_timeup, oneshot=True)
+                self.avoid_timer = rospy.Timer(rospy.Duration(5.8), self.cb_avoiding_timeup, oneshot=True)
                 self.tof_flag = False
                 if DEBUG:
                     self.loginfo("Avoid/LF_ENGLISH. {}".format(self.state))
@@ -515,7 +519,7 @@ class ControlNode(DTROS):
         self.vel_pub.publish(tw)
 
     def hook(self):
-        self.loginfo("SHUTTING DOWN")
+        self.loginfo("ENDING")
         twist=Twist2DStamped(v=0, omega=0)
         self.vel_pub.publish(twist)
         for i in range(8):
@@ -526,7 +530,18 @@ if __name__ == "__main__":
     node = ControlNode("control_node")
 
     # parking
-    node_parking = roslaunch.core.Node("parking", "parking_node")
+    node_parking = roslaunch.core.Node("parking",
+                                       "parking_node.py",
+                                       "parking_node",
+                                       namespace="{}".format(node.veh),
+                                       output="screen",
+                                       env_args=[
+                                           ("~veh", node.veh),
+                                           ("~stall", node.stall)
+                                       ],
+                                       remap_args=[
+                                           ("~tof_range", "/{}/front_center_tof_driver_node/range".format(node.veh)),
+                                       ])
     launch = roslaunch.scriptapi.ROSLaunch()
     launch.start()
 
@@ -542,6 +557,6 @@ if __name__ == "__main__":
                 rate=rospy.Rate(1)
             elif not process_parking.is_alive():
                 print("Parking finished, shutdown.")
-                rosnode.kill_nodes(["apriltag_node"])
+                rosnode.kill_nodes(["/{}/apriltag_node".format(node.veh)])
                 rospy.signal_shutdown("end")
         rate.sleep()
