@@ -139,7 +139,7 @@ class ControlNode(DTROS):
         super(ControlNode, self).__init__(node_name=node_name, node_type=NodeType.GENERIC)
         self.node_name = node_name
         self.veh = rospy.get_param("~veh")
-        self.stall = rospy.get_param("/{}/stall".format(self.veh), "1")
+        self.stall = rospy.get_param("/stall", "1")
 
         self.params = {}
 
@@ -536,8 +536,7 @@ if __name__ == "__main__":
                                        namespace="{}".format(node.veh),
                                        output="screen",
                                        env_args=[
-                                           ("~veh", node.veh),
-                                           ("~stall", node.stall)
+                                           ("~veh", node.veh)
                                        ],
                                        remap_args=[
                                            ("~tof_range", "/{}/front_center_tof_driver_node/range".format(node.veh)),
