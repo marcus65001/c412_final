@@ -46,10 +46,10 @@ class ParkingNode(DTROS):
         # }
 
         self.stall_numbers = {
-            1: [207, "Left", rospy.get_param("/o1",1.6)],
-            2: [226, "Left", rospy.get_param("/o2",3.6)],
-            3: [228, "Right", rospy.get_param("/o3",-1.9)],
-            4: [75, "Right", rospy.get_param("/o4",-3.6)],
+            1: [207, "Left", rospy.get_param("/o1",2.4)],
+            2: [226, "Left", rospy.get_param("/o2",5.4)],
+            3: [228, "Right", rospy.get_param("/o3",-2.4)],
+            4: [75, "Right", rospy.get_param("/o4",-5.4],
         }
 
         self.proportional = None
@@ -143,7 +143,7 @@ class ParkingNode(DTROS):
         if self.timer is None:
             self.stop_detection = True
             self.loginfo("Timer set")
-            self.timer = rospy.Timer(rospy.Duration(5), self.cb_timer, oneshot=True)
+            self.timer = rospy.Timer(rospy.Duration(3.5), self.cb_timer, oneshot=True)
 
         if self.stop_detection:
             return
