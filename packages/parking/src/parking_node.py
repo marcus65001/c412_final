@@ -145,6 +145,7 @@ class ParkingNode(DTROS):
         }
 
         self.twist = Twist2DStamped(v=0, omega=0)
+        self.rate = rospy.Rate(0.3)
 
         self.ip_turn_timer=None
 
@@ -201,6 +202,7 @@ class ParkingNode(DTROS):
                         self.twist.v=self.velocity
                 elif self.state in {State.IP_LEFT,State.IP_RIGHT}:
                     self.twist.omega = 0
+                    self.rate=rospy.Rate(8)
                     self.state = State.LF
                     if DEBUG:
                         self.loginfo("Found Tag")
@@ -219,23 +221,18 @@ class ParkingNode(DTROS):
 
 
     def drive(self):
-        rate = rospy.Rate(0.3)  # 8hz
         while not rospy.is_shutdown():
             if self.state == State.LF:
                 if DEBUG:
                     self.loginfo("<v:{} o:{}>".format(self.twist.v,self.twist.omega))
-                tw = self.controller.get_twist(self)
-                self.vel_pub.publish(tw)
+                self.vel_pub.publish(self.twist)
             else:
                 if DEBUG:
-                    self.loginfo("<v:{} o:{}>".format(self.twist.v, self.twist.omega))
-                tw = self.controller.get_twist(self)
-                self.vel_pub.publish(tw)
-                rospy.sleep(rospy.Duration(0.5))
-                self.twist.v = 0
-                self.twist.omega = 0
+                    self.loginfo("<v:{} o:{} slow>".format(self.twist.v, self.twist.omega))
                 self.vel_pub.publish(self.twist)
-            rate.sleep()
+                rospy.sleep(rospy.Duration(0.5))
+                self.vel_pub.publish(Twist2DStamped(v=0, omega=0))
+            self.rate.sleep()
 
     def hook(self):
         print("SHUTTING DOWN")
