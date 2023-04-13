@@ -124,7 +124,7 @@ class ParkingNode(DTROS):
         super(ParkingNode, self).__init__(node_name=node_name, node_type=NodeType.GENERIC)
         self.node_name = node_name
         self.veh = rospy.get_param("~veh")
-        self.stall_number = rospy.get_param("/stall")
+        self.stall_number = rospy.get_param("/stall",1)
 
         self.jpeg = TurboJPEG()
 
@@ -136,6 +136,8 @@ class ParkingNode(DTROS):
 
         self.ip_turn_omega=rospy.get_param("/ip_turn",3.0)
         self.velocity=rospy.get_param("/velocity",0.3)
+
+        self.tof_distance=np.inf
 
         self.stall_numbers = {
             1: [207, State.IP_LEFT, 0.4],
@@ -257,15 +259,39 @@ class ParkingNode(DTROS):
     def cb_tof(self, msg):  # tof sensor, Range msg, in meters
         self.tof_det_range = msg.range if msg.range < msg.max_range else np.inf
 
-        # if DEBUG_TEXT:
-        #     self.loginfo("TOF DISTANCE: " + str(self.tof_det_range))
-
 
     def drive(self):
         while not rospy.is_shutdown():
             if self.state == State.LF:
                 if DEBUG:
                     self.loginfo("<v:{} o:{}>".format(self.twist.v,self.twist.omega))
+
+                if self.proportional is None:
+                    self.twist.omega = 0
+                    self.last_error = 0
+                else:
+
+                    P = - self.proportional * self.P
+
+                    # D Term
+                    d_error = (self.proportional - self.last_error) / (rospy.get_time() - self.last_time)
+                    self.last_error = self.proportional
+                    self.last_time = rospy.get_time()
+                    D = d_error * self.D
+
+                    if self.tof_det_range < 0.2:
+                        self.twist.v = 0.0
+                        self.twist.omega = 0.0
+                        rospy.signal_shutdown("Finished Parking")
+
+                    else:
+                        self.twist.v = self.velocity
+                        self.twist.omega = P + D
+                        self.loginfo(self.twist.omega)
+
+                if DEBUG:
+                    self.loginfo([self.twist.v, self.twist.omega])
+
                 self.vel_pub.publish(self.twist)
             else:
                 if DEBUG:

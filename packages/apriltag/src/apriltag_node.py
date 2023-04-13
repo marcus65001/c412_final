@@ -68,7 +68,7 @@ class TagDetectorNode(DTROS):
             "other": "LIGHT_OFF"
         }
         self.tag_det = None
-        self.tag_det_dist = 1.4
+        self.tag_det_dist = 1.7
 
         # subscriber
         self.sub_comp_img = rospy.Subscriber('~cam', CompressedImage, self.cb_img)  # camera image topic
