@@ -25,7 +25,6 @@ STOP_MASK_H = [(170, 70, 50), (180, 255, 255)]
 DUCK_MASK=[(6,50,0),(26,255,255)]
 STOP_MASK_BLUE=[(105,95,95),(120,255,255)]
 PD_param={
-            # "regular":(-0.045, 0.0035),
             "regular": (-0.0475, 0.00375),
             "reduced":(-0.030, 0.0024)
         }
@@ -159,12 +158,6 @@ class ControlNode(DTROS):
             50:State.LEFT
         }
 
-        # self.PD_param={
-        #     # "regular":(-0.045, 0.0035),
-        #     "regular": (-0.0435, 0.0034),
-        #     "reduced":(-0.036, 0.0024)
-        # }
-
         self.lf_offset={
             State.LF:210,
             State.LF_ENGLISH:-210,
@@ -291,7 +284,6 @@ class ControlNode(DTROS):
             if len(cont_stop) > 0:
                 max_contour = max(cont_stop, key=cv2.contourArea)
                 m_area = cv2.contourArea(max_contour)
-                # self.loginfo("contour area: {}".format(m_area))
                 if m_area > 3500:
                     M = cv2.moments(max_contour)
                     try:
@@ -317,7 +309,6 @@ class ControlNode(DTROS):
                             cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
                     except:
                         pass
-                # elif m_area>6000 and not self.avoid_timer:
                 elif False:
                     # vehicle detection
                     if DEBUG:
@@ -388,7 +379,6 @@ class ControlNode(DTROS):
             if self.tag_det.tag_id in {227,207,226,228,75,38}:
                 if DEBUG:
                     self.loginfo("CONTROL END.")
-                # rospy.signal_shutdown("done")
                 self.state=State.PARK
                 self.hook()
                 return
@@ -450,16 +440,6 @@ class ControlNode(DTROS):
 
     def cb_duck_det(self,te):
         #duck detection
-        # res = cv2.matchTemplate(self.img[230:,:,:], self.duck_template, cv2.TM_CCORR_NORMED)
-        # threshold = 0.9
-        # loc = np.where(res >= threshold)
-        # if len(loc[0])>200:
-        #     if DEBUG:
-        #         self.loginfo("See duck")
-        #     self.det_no_duck=0
-        # else:
-        #     self.loginfo("No duck")
-        #     self.det_no_duck+=1
         hsv_duck=cv2.cvtColor(self.img[200:, :, :], cv2.COLOR_BGR2HSV)
         mask_duck = cv2.inRange(hsv_duck, *DUCK_MASK)
         if (area:=(mask_duck > 0).sum()) > 9400:
