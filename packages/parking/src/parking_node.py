@@ -134,7 +134,8 @@ class ParkingNode(DTROS):
         self.target_distance=rospy.get_param("/dist_go",0.4)
         self.state=State.GO_IN
 
-        self.controller=ParkController()
+        self.ip_turn_omega=rospy.get_param("/ip_turn",3.0)
+        self.velocity=rospy.get_param("/velocity",0.3)
 
         self.stall_numbers = {
             1: [207, State.IP_LEFT, 0.4],
@@ -178,36 +179,36 @@ class ParkingNode(DTROS):
             self.tag_det = msg
             if self.tag_det.tag_id==self.target_tag:
                 dist = self.tag_det.transform.translation.z
-                self.loginfo(
-                    "Target: {} - TDist: {} - Dist:{} - Cen:{}".format(self.target_tag, self.target_distance,dist,self.tag_det.center[0]))
+                if DEBUG:
+                    self.loginfo(
+                        "Target: {} - TDist: {} - Dist:{} - Cen:{}".format(self.target_tag, self.target_distance,dist,self.tag_det.center[0]))
                 if self.state == State.GO_IN:
                     if dist<self.target_distance:
                         self.state=self.stall_numbers[self.stall_number][1]
                         self.target_tag=self.stall_numbers[self.stall_number][0]
-                        self.loginfo("Stall: {} - Target: {} - State: {}".format(self.stall_number,self.target_tag,self.state))
-                        self.target_distance=0.1
-                        self.controller.constant_v.value=0
+                        if DEBUG:
+                            self.loginfo("Stall: {} - Target: {} - State: {}".format(self.stall_number,self.target_tag,self.state))
+                        self.twist.v=0
                         if self.state==State.IP_LEFT:
-                            self.loginfo("Set Left")
-                            self.controller.PD_omega=ConstantControl(self.controller.ip_turn_omega)
-                            self.controller.PD_all.set_disable(1.0)
-                            # self.ip_turn_timer=rospy.Timer(rospy.Duration(0.8),self.cb_ip_turn_timer)
+                            if DEBUG:
+                                self.loginfo("Set Left")
+                            self.twist.omega=self.ip_turn_omega
                         elif self.state==State.IP_RIGHT:
-                            self.loginfo("Set R")
-                            self.controller.PD_omega=ConstantControl(-self.controller.ip_turn_omega)
-                            self.controller.PD_all.set_disable(1.0)
-                            # self.ip_turn_timer = rospy.Timer(rospy.Duration(0.8), self.cb_ip_turn_timer)
-                        else:
-                            self.controller.PD_all.set_disable(0)
+                            if DEBUG:
+                                self.loginfo("Set Right")
+                            self.twist.omega=-self.ip_turn_omega
                     else:
-                        if self.controller.constant_v.value==0:
-                            self.controller.constant_v.value=0.2
-                        self.controller.PD_all.proportional=max(0,dist-self.target_distance)/self.target_distance
+                        self.twist.v=self.velocity
                 elif self.state in {State.IP_LEFT,State.IP_RIGHT}:
-                    self.controller.PD_all.set_disable(1.0)
-                    # self.ip_turn_timer.shutdown()
-                    self.state = State.DONE
-                    self.loginfo("Found Tag")
+                    self.twist.omega = 0
+                    self.state = State.LF
+                    if DEBUG:
+                        self.loginfo("Found Tag")
+            else:
+                if DEBUG:
+                    self.loginfo("Lost Target")
+                self.twist.v = 0
+                self.twist.omega = 0
 
 
     def cb_tof(self, msg):  # tof sensor, Range msg, in meters
@@ -221,11 +222,13 @@ class ParkingNode(DTROS):
         rate = rospy.Rate(0.3)  # 8hz
         while not rospy.is_shutdown():
             if self.state == State.LF:
-                self.loginfo(self.controller)
+                if DEBUG:
+                    self.loginfo("<v:{} o:{}>".format(self.twist.v,self.twist.omega))
                 tw = self.controller.get_twist(self)
                 self.vel_pub.publish(tw)
             else:
-                self.loginfo(self.controller)
+                if DEBUG:
+                    self.loginfo("<v:{} o:{}>".format(self.twist.v, self.twist.omega))
                 tw = self.controller.get_twist(self)
                 self.vel_pub.publish(tw)
                 rospy.sleep(rospy.Duration(0.5))
