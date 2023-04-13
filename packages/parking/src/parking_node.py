@@ -49,7 +49,7 @@ class ParkingNode(DTROS):
             1: [207, "Left", rospy.get_param("/o1",2.4)],
             2: [226, "Left", rospy.get_param("/o2",5.4)],
             3: [228, "Right", rospy.get_param("/o3",-2.4)],
-            4: [75, "Right", rospy.get_param("/o4",-5.4],
+            4: [75, "Right", rospy.get_param("/o4",-5.4)],
         }
 
         self.proportional = None
