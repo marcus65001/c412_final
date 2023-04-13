@@ -210,6 +210,50 @@ class ParkingNode(DTROS):
                 self.twist.omega = 0
 
 
+    def callback(self, msg):
+
+        if self.state!=State.LF:
+            return
+
+        img = self.jpeg.decode(msg.data)
+
+        # add_patch
+        m_mask = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
+        m_mask[:, :-300] = 1
+        img = cv2.bitwise_and(img, img, mask=m_mask)
+        crop = img[300:-1, :, :]
+
+        crop_width = crop.shape[1]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, ROAD_MASK[0], ROAD_MASK[1])
+        crop = cv2.bitwise_and(crop, crop, mask=mask)
+        contours, hierarchy = cv2.findContours(mask,
+                                               cv2.RETR_EXTERNAL,
+                                               cv2.CHAIN_APPROX_NONE)
+        # Search for lane in front
+        max_area = 20
+        max_idx = -1
+        for i in range(len(contours)):
+            area = cv2.contourArea(contours[i])
+            if area > max_area:
+                max_idx = i
+                max_area = area
+
+        if max_idx != -1:
+            M = cv2.moments(contours[max_idx])
+            try:
+                cx = int(M['m10'] / M['m00'])
+                cy = int(M['m01'] / M['m00'])
+                self.proportional = cx - int(crop_width / 2) + self.offset
+                if DEBUG:
+                    cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
+                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+            except:
+                pass
+        else:
+            self.proportional = None
+
+
     def cb_tof(self, msg):  # tof sensor, Range msg, in meters
         self.tof_det_range = msg.range if msg.range < msg.max_range else np.inf
 
