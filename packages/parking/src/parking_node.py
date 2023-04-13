@@ -25,7 +25,7 @@ class State(Enum):
     GO_IN = auto()
     IP_LEFT = auto()
     IP_RIGHT = auto()
-    TO_TAG = auto()
+    LF = auto()
     DONE = auto()
 
 
@@ -76,6 +76,9 @@ class ConstantControl:
     def __init__(self, value):
         self.value=value
 
+    def __repr__(self):
+        return "<V={}>".format(self.value)
+
     def get(self):
         return self.value
 
@@ -95,12 +98,12 @@ class Controller:
 
 
 class ParkController(Controller):
-    def __init__(self,velocity=0.3,ip_turn_omega=2.6):
+    def __init__(self,velocity=0.46,ip_turn_omega=rospy.get_param("/ip_turn",3)):
         super().__init__()
         self.PD_omega = ConstantControl(0)
-        self.PD_all = PD(1.0,0.002,clip=(0., 1.))
+        self.PD_all = PD(1.0,0.02,clip=(0., 1.))
         # self.PD_all.set_disable(1.0)
-        self.constant_v = ConstantControl(0)
+        self.constant_v = ConstantControl(velocity)
         self.ip_turn_omega=ip_turn_omega
 
     def __repr__(self):
@@ -127,7 +130,7 @@ class ParkingNode(DTROS):
 
         self.loginfo("Initialized")
 
-        self.target_tag=143
+        self.target_tag=227
         self.target_distance=rospy.get_param("/dist_go",0.4)
         self.state=State.GO_IN
 
@@ -141,6 +144,8 @@ class ParkingNode(DTROS):
         }
 
         self.twist = Twist2DStamped(v=0, omega=0)
+
+        self.ip_turn_timer=None
 
         # Publishers & Subscribers
         self.sub_apriltag_info = rospy.Subscriber("~tag",
@@ -175,22 +180,34 @@ class ParkingNode(DTROS):
                 dist = self.tag_det.transform.translation.z
                 self.loginfo(
                     "Target: {} - TDist: {} - Dist:{} - Cen:{}".format(self.target_tag, self.target_distance,dist,self.tag_det.center[0]))
-                if dist<self.target_distance:
-                    if self.state==State.GO_IN:
+                if self.state == State.GO_IN:
+                    if dist<self.target_distance:
                         self.state=self.stall_numbers[self.stall_number][1]
                         self.target_tag=self.stall_numbers[self.stall_number][0]
                         self.loginfo("Stall: {} - Target: {} - State: {}".format(self.stall_number,self.target_tag,self.state))
-                        self.target_distance=0.3
+                        self.target_distance=0.1
+                        self.controller.constant_v.value=0
                         if self.state==State.IP_LEFT:
+                            self.loginfo("Set Left")
                             self.controller.PD_omega=ConstantControl(self.controller.ip_turn_omega)
-                        if self.state==State.IP_RIGHT:
+                            self.controller.PD_all.set_disable(1.0)
+                            # self.ip_turn_timer=rospy.Timer(rospy.Duration(0.8),self.cb_ip_turn_timer)
+                        elif self.state==State.IP_RIGHT:
+                            self.loginfo("Set R")
                             self.controller.PD_omega=ConstantControl(-self.controller.ip_turn_omega)
+                            self.controller.PD_all.set_disable(1.0)
+                            # self.ip_turn_timer = rospy.Timer(rospy.Duration(0.8), self.cb_ip_turn_timer)
                         else:
-                            self.controller.PD_omega=PD(-0.0275, 0.00375)
-                else:
-                    if self.state in {State.TO_TAG,State.GO_IN}:
+                            self.controller.PD_all.set_disable(0)
+                    else:
+                        if self.controller.constant_v.value==0:
+                            self.controller.constant_v.value=0.2
                         self.controller.PD_all.proportional=max(0,dist-self.target_distance)/self.target_distance
-                        self.controller.PD_omega.proportional = self.tag_det.center[0]-320
+                elif self.state in {State.IP_LEFT,State.IP_RIGHT}:
+                    self.controller.PD_all.set_disable(1.0)
+                    # self.ip_turn_timer.shutdown()
+                    self.state = State.DONE
+                    self.loginfo("Found Tag")
 
 
     def cb_tof(self, msg):  # tof sensor, Range msg, in meters
@@ -200,15 +217,22 @@ class ParkingNode(DTROS):
         #     self.loginfo("TOF DISTANCE: " + str(self.tof_det_range))
 
 
-    def cb_timer(self, te):
-        self.loginfo("Timer Up")
-        self.stop_detection = False
-
-
     def drive(self):
-        self.loginfo(self.controller)
-        tw = self.controller.get_twist(self)
-        self.vel_pub.publish(tw)
+        rate = rospy.Rate(0.3)  # 8hz
+        while not rospy.is_shutdown():
+            if self.state == State.LF:
+                self.loginfo(self.controller)
+                tw = self.controller.get_twist(self)
+                self.vel_pub.publish(tw)
+            else:
+                self.loginfo(self.controller)
+                tw = self.controller.get_twist(self)
+                self.vel_pub.publish(tw)
+                rospy.sleep(rospy.Duration(0.5))
+                self.twist.v = 0
+                self.twist.omega = 0
+                self.vel_pub.publish(self.twist)
+            rate.sleep()
 
     def hook(self):
         print("SHUTTING DOWN")
@@ -221,7 +245,5 @@ class ParkingNode(DTROS):
 
 if __name__ == "__main__":
     node = ParkingNode("parking_node")
-    rate = rospy.Rate(8)  # 8hz
-    while not rospy.is_shutdown():
-        node.drive()
-        rate.sleep()
+
+    node.drive()

@@ -202,7 +202,7 @@ class TagDetectorNode(DTROS):
         return tf.transformations.quaternion_from_matrix(T)
 
     def run(self):
-        rate = rospy.Rate(2)
+        rate = rospy.Rate(4)
         while not rospy.is_shutdown():
             if self.image is not None:
                 # publish image
