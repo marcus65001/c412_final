@@ -221,7 +221,7 @@ class ParkingNode(DTROS):
             self.last_time = rospy.get_time()
             D = d_error * self.D
 
-            if self.tof_det_range < 0.2:
+            if self.tof_det_range < 0.19:
                 self.twist.v = 0.0
                 self.twist.omega = 0.0
                 rospy.signal_shutdown("Finished Parking")
